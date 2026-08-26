@@ -132,6 +132,9 @@ Both rules are defined in the manager's ruleset file 0800-Sysmon_id_1.xml.
 
 ![Wazuh alerts raised by the T1033 test](../images/t1033-alerts.png)
 
+Expanded view of the whoami.exe process-creation event, showing the full untruncated field values quoted in the table above:
+
+![Expanded Sysmon event for the whoami.exe process creation](../images/t1033-expanded-alert.png)
 ---
 
 ### Open question: are failed executions logged?
