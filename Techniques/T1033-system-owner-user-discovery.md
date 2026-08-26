@@ -129,7 +129,8 @@ Command line shown unescaped; the Wazuh dashboard renders `&` as `&amp;` and
 
 Both rules are defined in the manager's ruleset file 0800-Sysmon_id_1.xml.
 
-[Wazuh alerts raised by the T1033 test](https://gyazo.com/e07f109e929e2e6655c2bd9869a2c0c4)
+
+![Wazuh alerts raised by the T1033 test](../images/t1033-alerts.png)
 
 ---
 
