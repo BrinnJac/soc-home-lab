@@ -278,9 +278,10 @@ a "log does not exist" error, which looked like a broken Sysmon install rather t
 **Note the start time before executing.** Reconstructing which events belonged to the test meant searching a
 wider window than necessary.
 
-**Capture processGuid alongside PIDs.** PIDs are reused by Windows once a process exits, so they can't reliably identify
-a process on their own. I initially transcribed the PID/PPID columns transposed and the tree didn't close — GUIDs would
-have made the error obvious immediately.
+**Use processGuid, not just PIDs.** PIDs are reused by Windows once a process exits, so they can't reliably
+identify a process on their own. I transcribed the PID/PPID columns transposed at one point and the tree 
+didn't close — GUIDs would have made the error obvious immediately. Sysmon was recording processGuid and 
+parentProcessGuid all along; I simply wasn't reading expanded events yet, so I never saw them.
 
 **Read the SwiftOnSecurity config before relying on the telemetry.** It deliberately excludes activity to control volume.
 Knowing what's filtered is part of knowing what "no events" means.
