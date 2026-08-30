@@ -140,7 +140,7 @@ alone shows only the rule descriptions:
 Expanded view of the `whoami.exe` process-creation event, showing the full
 untruncated field values quoted in the table above:
 
-![Expanded Sysmon event for the whoami.exe process creation](../images/t1033-expanded-alert.jpeg)
+![Expanded Sysmon event for the whoami.exe process creation](/Images/t1033-expanded-alert.jpeg)
 
 **Also visible in that event, and worth noting:**
 
