@@ -133,14 +133,14 @@ Dashboard overview for the test window. The MITRE ATT&CK panel is what first
 surfaced the Discovery tagging described in the analysis below — the alerts table
 alone shows only the rule descriptions:
 
-![Wazuh dashboard for the T1033 test window](../images/t1033-dashboard.jpg)
+![Wazuh dashboard for the T1033 test window](../Images/t1033-dashboard.jpg)
 
-![Wazuh alerts raised by the T1033 test](../images/t1033-alerts.jpg)
+![Wazuh alerts raised by the T1033 test](../Images/t1033-alerts.jpg)
 
 Expanded view of the `whoami.exe` process-creation event, showing the full
 untruncated field values quoted in the table above:
 
-![Expanded Sysmon event for the whoami.exe process creation](/Images/t1033-expanded-alert.jpeg)
+![Expanded Sysmon event for the whoami.exe process creation](../Images/t1033-expanded-alert.jpeg)
 
 **Also visible in that event, and worth noting:**
 
