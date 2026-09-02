@@ -17,6 +17,14 @@ working out *that* something had failed turned out to be harder than fixing it.
 | Attack simulation | Atomic Red Team (`Invoke-AtomicRedTeam`) |
 | Network | VirtualBox Host-only, `192.168.56.0/24` |
 
+**Retention note:** this Wazuh install keeps only events that match a rule.
+`<logall>` and `<logall_json>` are both `no` by default, and
+`/var/ossec/logs/archives/archives.log` is empty — nothing has ever been archived.
+Everything that doesn't trigger a rule is evaluated and discarded at the manager,
+so the Events view reads the alerts index rather than a raw event store. Detection
+and retention are the same thing in this configuration; there is no retrospective
+hunting. Found while investigating a zero-event result in the T1033 writeup.
+
 Also present but unused so far: a Kali VM (for later network-based attacks) and
 two Ubuntu VMs held in reserve as future monitored endpoints.
 

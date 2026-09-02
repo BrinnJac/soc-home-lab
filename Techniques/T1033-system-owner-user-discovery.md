@@ -1,8 +1,8 @@
 # T1033 — System Owner/User Discovery
 
 **Tactic:** Discovery  
-**Date tested:** 08/25/2026  
-**Test executed:** Atomic Red Team T1033, Test 1
+**Dates tested:** 25 Aug, 27 Aug, 31 Aug 2026  
+**Tests executed:** Atomic Red Team T1033 — tests 1, 5 and 6
 
 ---
 
@@ -36,7 +36,9 @@ which is what makes the technique a useful first detection exercise.
 
 ---
 
-## Execution
+## Test 1 — System Owner/User Discovery (command prompt)
+
+**Executed:** 25 Aug 2026
 
 ```powershell
 Invoke-AtomicTest T1033 -TestNumbers 1
@@ -150,7 +152,10 @@ untruncated field values quoted in the table above:
   level is another axis a detection could use, and one that costs nothing to add.
 - `processGuid` and `parentProcessGuid` — unique per process, unlike PIDs, which
   Windows reuses. These are the reliable way to link parent to child.
-  
+- `hashes` (MD5, SHA256, IMPHASH) — not useful for a signed system binary like
+  `whoami.exe`, but this is the field that would matter for an unknown executable
+  being checked against threat intelligence.
+
 ---
 
 ### Open question: are failed executions logged?
@@ -243,60 +248,349 @@ be.
 
 ---
 
+## Test 5 — GetCurrent with PowerShell Script
+
+**Executed:** 27 Aug 2026, 12:16:21
+
+```powershell
+Invoke-AtomicTest T1033 -TestNumbers 5
+```
+
+The technique here is a single .NET call inside PowerShell:
+
+```powershell
+[System.Security.Principal.WindowsIdentity]::GetCurrent() | Out-File -FilePath .\CurrentUserObject.txt
+```
+
+**Prediction (recorded before execution):** an Event ID 1 alert, because the
+technique uses the Windows identity to call `GetCurrent()`, plus unauthorized
+access to a file to steal data.
+
+**Result: exit code 0, no console output.** The output file was written — not to
+the working directory as the command implies, but to `%TEMP%`.
+
+### Telemetry
+
+One process-creation event corresponds to this test:
+
+| image | parentImage | commandLine |
+|---|---|---|
+| `powershell.exe` | `powershell.exe` | `"powershell.exe" & {[System.Security.Principal.WindowsIdentity]::GetCurrent() \| Out-File -FilePath .\CurrentUserObject.txt}` |
+
+**No child process was created.** The .NET call executes inside the already-running
+PowerShell process. There is no `whoami.exe`, no `cmd.exe`, nothing for a
+process-name rule to match on. The entire technique exists only as text inside one
+command line.
+
+Also present in the window, and *not* part of the technique: `whoami.exe` and
+`HOSTNAME.EXE` with bare command lines and no arguments, both parented by
+PowerShell. These are Atomic Red Team's own instrumentation collecting host
+context. A `whoami.exe` sitting next to a discovery test is exactly the kind of
+thing that invites misattribution.
+
+### Alerts
+
+**Zero.** Nothing in the Dashboard view, and nothing in the Events view either.
+
+![No alerts for T1033 test 5](../Images/t1033-test5-alerts.png)
+
+**Prediction outcome: wrong.** Sysmon did record a process creation, so the
+direction was half right — but nothing alerted, and there was no unauthorized
+access. The file was written by my own user to my own temp directory.
+
+### The finding underneath the zero
+
+Zero *events* — not just zero alerts — was unexpected, since Sysmon had clearly
+logged the process locally. Checked the manager configuration:
+
+```bash
+sudo grep -A3 "logall" /var/ossec/etc/ossec.conf
+```
+
+```
+<logall>no</logall>
+<logall_json>no</logall_json>
+```
+
+And `/var/ossec/logs/archives/archives.log` is 0 bytes. Nothing has ever been
+archived.
+
+**This Wazuh install retains only events that match a rule.** Everything else is
+evaluated and discarded at the manager. The "Events" view reads the alerts index;
+there is no raw event store behind it.
+
+So detection and retention are the same thing in this configuration. If I learned
+tomorrow that this technique had run, I could not go back and look — the record
+does not exist. That is a defensible default (archiving everything is expensive)
+but it is a choice, and worth knowing you have made it. See also the build notes.
+
+---
+
+## Test 6 — SocGholish whoami
+
+**Executed:** 31 Aug 2026, 16:49
+
+```powershell
+Invoke-AtomicTest T1033 -TestNumbers 6
+```
+
+This test models a real malware family. SocGholish is a JavaScript-based loader
+distributed through fake browser-update prompts on compromised websites; operators
+use it to establish a foothold before handing off to other crews. The discovery
+step simulated here is what happens immediately after initial access — deciding
+whether the host is worth escalating on.
+
+The test generates a random filename, then redirects `whoami.exe /all` into it:
+
+```powershell
+$rad = (Get-Random -Count 5 -InputObject $StringSet) -join ''
+$file = "rad" + $rad + ".tmp"
+whoami.exe /all >> $env:temp\$file
+```
+
+**Prediction (recorded before execution):** an Event ID 1 alert from `whoami.exe`,
+which would then have to execute `cmd.exe` to operate, leaving familiar
+parent/child PID relationships. No expectation formed about SocGholish itself.
+
+**Result:** `radS4RM3.tmp` created in `%TEMP%`, 11,268 bytes — a full `whoami /all`
+dump.
+
+### Telemetry
+
+Two process-creation events belong to this test, both at 16:49:35:
+
+| image | parentImage | commandLine |
+|---|---|---|
+| `powershell.exe` | `powershell.exe` | the full SocGholish script, inline |
+| `whoami.exe` | `powershell.exe` | `"C:\WINDOWS\system32\whoami.exe" /all` |
+
+**Prediction outcome: half right.** `whoami.exe` appeared with an Event ID 1, as
+expected. But there is **no `cmd.exe` anywhere** — PowerShell spawned `whoami.exe`
+directly. That matters, because test 1's alerts fired on cmd-under-cmd ancestry,
+and that ancestry does not exist here.
+
+Harness noise in the same window: `HOSTNAME.EXE` at 16:49:22 and 16:49:23, and a
+`whoami.exe` at 16:49:33 — all bare command lines with no arguments. The
+technique's `whoami.exe` is distinguishable only by its `/all` argument. Without
+checking the command line there would be two `whoami.exe` executions and no way to
+tell which was the test.
+
+### File creation
+
+Only **one** Event ID 11 in the window:
+
+| Image | TargetFilename |
+|---|---|
+| `powershell.exe` | `C:\Users\vboxuser\AppData\Local\Temp\__PSScriptPolicyTest_t4faxv5h.mj0.ps1` |
+
+`radS4RM3.tmp` — the artifact the technique actually produced, containing a full
+credential context dump — **was never logged**.
+
+The SwiftOnSecurity config uses `<FileCreate onmatch="include">`, so Event ID 11
+fires only for paths on its list: `\Start Menu`, `\Startup\`, `\Downloads\`, and a
+set of extensions (`.bat`, `.cmd`, `.hta`, `.doc`, `.xls`, `.rtf`, `.ps1`, and
+others). Neither `.tmp` nor temp directories appear anywhere on it.
+
+This is not an exclusion filtering the file out. The file was never in scope. The
+config's design principle for file creation is "log the file types attackers use to
+gain execution" — and a `.tmp` holding stolen output is not an execution vector, so
+it falls outside the design entirely.
+
+### Alerts
+
+Two alerts attributable to this test, both at 16:49:34:
+
+| Rule | Level | Description | ATT&CK technique | ATT&CK tactic |
+|---|---|---|---|---|
+| 92213 | **15** | Executable file dropped in folder commonly used by malware | Ingress Tool Transfer | Command and Control |
+| 92027 | 4 | Powershell process spawned powershell instance | PowerShell | Execution |
+
+Three other alerts in the window belong to other activity — a CIS benchmark check,
+a netstat change on the manager itself, and one unrelated rule.
+
+![Wazuh alerts for the T1033 test 6 window](../Images/t1033-test6-alerts.png)
+
+### The inversion
+
+Rule 92213 is defined in `0830-sysmon_id_11.xml` and matches on this pattern:
+
+```
+\Users\...\AppData\Local\Temp\... ending in
+.exe|.com|.dll|.vbs|.js|.bat|.cmd|.pif|.wsh|.ps1|.msi|.vbe
+```
+
+`.ps1` is on that list. PowerShell writes `__PSScriptPolicyTest_*.ps1` to temp
+automatically whenever it checks execution policy. So the file that triggered a
+**level 15** alert — the highest severity this lab has produced — is PowerShell's
+own housekeeping.
+
+![Wazuh rule 92213 definition, showing the .ps1 match pattern and its ATT&CK mapping](../Images/t1033-rule-92213.png)
+
+| Artifact | What it is | Alert |
+|---|---|---|
+| `__PSScriptPolicyTest_....ps1` | PowerShell housekeeping, created automatically | **Level 15**, Ingress Tool Transfer / Command and Control |
+| `radS4RM3.tmp` | SocGholish output, 11 KB of credential context | **Nothing** — not in the FileCreate include list |
+
+Both files were written to the same directory, by the same process, within the same
+second. The monitoring rated its own noise at 15 and the real artifact at zero.
+
+The tagging is also wrong on its face. Nothing was transferred — the lab has no
+internet egress — and there is no command-and-control channel on an isolated
+host-only network. The tag describes what rule 92213 is associated with, not what
+happened. Same pattern as test 1's T1087 mapping, in a more consequential form.
+
+**One limitation worth stating.** Real SocGholish *would* generate Ingress Tool
+Transfer telemetry at this stage, because the discovery step exists to inform what
+gets pulled down next. Atomic Red Team simulates only the discovery fragment, so
+this lab never sees that phase. The tag being coincidentally plausible does not make
+it correct here.
+
+---
+
+## Comparison across three deliveries
+
+The same technique — identify the current user — executed three ways:
+
+| | Test 1 | Test 5 | Test 6 |
+|---|---|---|---|
+| **Delivery** | chained cmd utilities | .NET call in PowerShell | PowerShell → `whoami.exe /all` |
+| **Child processes** | 3 × cmd, 3 × whoami | none | 1 × whoami |
+| **Artifact on disk** | computers.txt, usernames.txt | CurrentUserObject.txt | radS4RM3.tmp |
+| **Artifact logged?** | not checked | no | **no** |
+| **Alerts** | 4 | **0** | 2 |
+| **Highest level** | 4 | — | **15** |
+| **ATT&CK tactics** | Discovery, Execution | none | Execution, Command and Control |
+
+**Three observations.**
+
+**The alerts track the shell, not the behavior.** Test 1 produced four alerts about
+cmd shell execution. Test 5, with no shell involved beyond the host PowerShell
+process, produced nothing at all. Test 6 produced alerts about PowerShell spawning
+PowerShell. In none of the three did a rule fire because enumeration was happening.
+
+**Alert volume is not proportional to risk.** Test 6 produced fewer alerts than test
+1 but a far higher severity — and the severity came from a false positive.
+Test 5, arguably the stealthiest of the three because it creates no process at all,
+produced silence.
+
+**Discovery tagging appeared once and named the wrong technique.** Test 1's rules
+carry T1087 Account Discovery. Tests 5 and 6 carry no Discovery association at all.
+A dashboard filtered by T1033 — the technique that actually ran, all three times —
+would surface none of this.
+
+---
+
 ## Would I detect on this?
 
-Not on whoami execution alone. Administrators, login scripts, and software
-installers run it constantly. A rule matching on it would generate false
-positives indefinitely and be tuned out within a week.
+Test 1 alone suggested a fairly comfortable answer: the individual commands are
+undetectable, but the *composition* is distinctive, so match on command-line
+content. Tests 5 and 6 undercut most of that.
 
-But the observed command line is highly detectable. It chains eight discovery
-commands with &, redirects output to computers.txt and usernames.txt, and nests
-a loop enumerating sessions on remote hosts. No administrator types this interactively.
+### What the three tests did to each candidate detection
 
-**Candidate detections**
+**Multiple discovery binaries in one command line.** Works for test 1, which chains
+eight of them. Useless for tests 5 and 6, which each invoke exactly one thing. The
+composition signal only exists when the attacker chooses to compose.
 
-**1. Multiple discovery binaries in a single command line.** The signature here is
-composition, not individual tool. Likely low false-positive rate.
+**Anomalous parent process.** Test 1 gave cmd-under-cmd; test 6 gave
+PowerShell-spawning-whoami; test 5 gave no child process at all. Three different
+ancestries for one technique, and the third has nothing to inspect. Any rule tuned
+to one shape misses the others.
 
-**2. Discovery commands with output redirection to a file.** Staging results for later
-collection is attacker behavior, not troubleshooting behavior.
+**Enumeration clustering.** Test 1 clusters. Tests 5 and 6 are single actions. A
+correlation rule needs multiple events to correlate, and two of these produce one.
 
-**3. Anomalous parent process.** whoami.exe under a web server or database process
-is meaningfully different from whoami.exe under an interactive shell.
+**Output redirection to a file.** This is the only candidate that survives all
+three. Every test writes its results somewhere:
 
-**4. Enumeration clustering.** Several distinct discovery techniques within a short window,
-correlated across events rather than matched in a single rule.
+| Test | Redirection, as it appears in the command line |
+|---|---|
+| 1 | `... \|\| echo %j > computers.txt` |
+| 5 | `... \| Out-File -FilePath .\CurrentUserObject.txt` |
+| 6 | `whoami.exe /all >> $env:temp\$file` |
 
-**Where each would produce false positives**
+Discovery output being *saved* rather than read is the common thread. An
+administrator checking who is logged in reads the answer on screen. Staging it to
+disk implies collection for later use.
 
-**1. Multiple discovery binaries in one command line.** Software installers and setup scripts
-routinely chain enumeration commands to check the environment before installing. Asset inventory
-and endpoint management agents do the same on a schedule, by design. Vulnerability scanners run
-discovery as their whole purpose. In an enterprise this rule would fire constantly on management
-tooling unless those parent processes were excluded — and maintaining that exclusion list is
-ongoing work, not a one-time tuning pass.
+That is where I would build, if I were building one rule. It is also the candidate
+with the worst false-positive profile, since IT scripts write inventory to files
+constantly — so it would need pairing with something else, and I have no baseline
+to work out what.
 
-**2. Discovery output redirected to a file.** IT scripts write inventory to files all the time:
-audit reporting, license reconciliation, troubleshooting data collection, onboarding checks. The
-behavior is identical to staging for exfiltration; only intent differs, and intent isn't in the log.
-Narrowing to unusual output locations (temp directories, user profile roots) would cut the noise but
-also miss an attacker who writes somewhere ordinary.
+### The detection I can't build with this telemetry
 
-**3. Anomalous parent process.** This one depends entirely on having a baseline, and "anomalous" means
-different things per environment. Legitimate applications shell out — monitoring agents, remote management tools,
-build systems, and some line-of-business software all spawn shells as designed. Without knowing what's
-normal for a given host, the rule is either too broad or arbitrary. Worth noting that this is precisely
-the rule that fired on my own test harness rather than on the technique.
+Test 6's clearest signal was never a process at all. A randomly-named `.tmp`
+appearing in `%TEMP%`, written by PowerShell, containing a full credential context
+dump, is far more specific than anything in the process telemetry — and Sysmon
+never logged it, because `.tmp` is outside the FileCreate include list.
 
-**4. Enumeration clustering.** New machine provisioning, IT audits, and vulnerability scans all produce
-dense bursts of discovery activity. So does an administrator actively troubleshooting a problem — they
-run many discovery commands quickly, which is exactly the pattern being matched. Time-of-day or account-based
-context would help but wouldn't eliminate it.
+Adding it would mean including `.tmp` in temp directories. The cost is enormous:
+temp is where every application on the system churns. That is the tuning tradeoff
+in concrete form — the config's blind spot is the price of its signal-to-noise
+ratio, and it is a deliberate trade rather than an oversight.
 
-**Limitation of this lab for answering the question.** All of the above is reasoned rather than measured.
-This environment has one monitored host, no user population, and no normal business activity, so there's no
-baseline to test false-positive rates against. Assessing these rules properly would require running them against
-real traffic over time — which is the part of detection engineering a home lab can't reproduce.
+### The tuning problem the tests exposed
+
+Rule 92213 fired at **level 15** on `__PSScriptPolicyTest_*.ps1`, a file PowerShell
+creates automatically. The rule matches `.ps1` written to a user temp directory,
+which describes routine PowerShell operation as accurately as it describes malware.
+
+**Tested directly.** Launched three PowerShell sessions doing nothing but printing
+the date. Four level 15 alerts, all rule 92213, all tagged Ingress Tool Transfer.
+Three fired together; a fourth fired exactly one second earlier, and I have not
+established what produced it. The rule fires on ordinary PowerShell use, every
+time.
+
+![Four level 15 alerts from three PowerShell sessions printing the date](../Images/t1033-92213-falsepositive.png)
+
+Every alert in that window is the same false positive, and the entire ATT&CK
+breakdown is a single technique that did not occur on a host with no internet
+egress.
+
+Level 15 is the severity reserved for things that should interrupt someone. On this
+host it is generated by opening a shell. That doesn't just waste triage time — it
+teaches whoever is on the receiving end to disbelieve level 15, which is the
+expensive part. The next real level 15 arrives into an inbox where that severity has
+already been discredited.
+
+Worth noting what this means alongside the earlier finding: my highest-severity
+alert fires reliably on background noise, and the genuinely malicious artifact
+produced nothing at all. Both errors point the same direction — severity as
+configured here is uncorrelated with risk.
+
+### Where each candidate would produce false positives
+
+**Output redirection.** IT scripts write inventory to files constantly — audit
+reporting, license reconciliation, troubleshooting collection, onboarding checks.
+The behavior is identical to staging for exfiltration; only intent differs, and
+intent isn't in the log. Narrowing to unusual output locations would cut noise but
+miss an attacker writing somewhere ordinary.
+
+**Multiple discovery binaries in one command line.** Installers and setup scripts
+routinely chain enumeration to check the environment. Asset inventory and endpoint
+management agents do it on a schedule, by design. Vulnerability scanners do it as
+their whole purpose. In an enterprise this fires constantly on management tooling
+unless those parents are excluded, and maintaining that list is ongoing work.
+
+**Anomalous parent process.** Depends entirely on having a baseline, and
+"anomalous" means different things per environment. Monitoring agents, remote
+management tools, build systems and some line-of-business software all spawn shells
+by design. Worth noting this is precisely the rule that fired on my own test harness
+rather than on the technique.
+
+**Enumeration clustering.** New machine provisioning, IT audits and vulnerability
+scans all produce dense bursts of discovery. So does an administrator troubleshooting
+a problem — many discovery commands, quickly, which is exactly the pattern being
+matched.
+
+### Limitation of this lab for answering the question
+
+All of the above is reasoned rather than measured. One monitored host, no user
+population, no normal business activity — there is no baseline to test false-positive
+rates against. Assessing these rules properly would require running them against real
+traffic over time, which is the part of detection engineering a home lab cannot
+reproduce.
 
 ---
 
